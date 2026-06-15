@@ -1,0 +1,64 @@
+-- SQL Queries for Workflow Configuration
+select * from recon_workflow where id='5'
+
+select * from recon_rule_workflow rw
+join recon_rule_script_cfg rc
+on rw.ruleid=rc.id
+where workflowid=5
+order by run_seq
+
+# Rule #5 PREMIER-Advice-ADD
+
+PREMIER-SUM-AMOUNT
+    FromBMOFundingFile().
+    find("settlement_no", sum_("amounts").as_("sum_amt")).
+    grouped_by("settlement_no")
+
+COMPARE-SUM-INPUT-PREMIER
+    FromInputStatement().
+    find(col("id").as_("bmoinputid"),
+    const(input["settlement_no"]).as_("sr_no")).
+    where(jcol("description").contains("%0055%")).
+    and_(jnum("net").rounded_abs_eq(input["sum_amt"],2))
+
+GET-PREMIER-ADD-BY-SRNO
+    FromBMOFundingFile().
+    find(col("id").as_("bmofundid"),
+    jnum("amounts").as_("bmoamount"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["sr_no"]).as_("sr_no")).
+    where(jcol("settlement_no").is_(input["sr_no"])).
+    and_(jcol("details").is_("ADD")).
+    and_(col("cleared_status").is_("U"))
+
+COMPARE-PREMIER-AMOUT-SETTLEMENT
+    FromInputStatement().
+    find(col("id").as_("settlementid"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid")).
+    where(jcol("description").contains("%SETTLE%")).
+    and_(col("cleared_status").is_("U")).
+    and_(jnum("net").rounded_abs_eq(input["bmoamount"],2))
+
+PREMIER-Amount-Report
+    with_aliases(
+        UploadRawData, "bmodata", "bmofunding",
+        lambda bmodata, bmofunding:
+        Q(bmodata)
+        .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+        .find(func.replace(func.concat(bmodata.json_data["description"].astext, bmodata.json_data["net"].astext),'','').label("DESCRIPTION"),
+        const("Funding").label("CATEGORY"),
+        bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+        bmofunding.json_data["details"].astext.label("TYPE"),
+        func.round(pg_safe_numeric(bmofunding.json_data, "amounts"),2).label("AMOUNT"),
+        bmodata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmodata.id == input["bmoinputid"])
+    )
+
+PREMIER-Settlment-Report
+    FromInputStatement().
+    find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"),2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    literal("Advice").label("CATEGORY"))
+    where(UploadRawData.id == input["settlementid"])

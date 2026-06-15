@@ -1,0 +1,782 @@
+openapi: 3.0.3
+info:
+  title: WiRecon API
+  description: |
+    WiRecon backend REST APIs.
+    This system provides APIs for:
+    - User authentication
+    - Client and user management
+    - File uploads for reconciliation
+    - Report generation and download
+    All secured endpoints require JWT Bearer authentication.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000 # dev
+  - url: https://happy-water-0e5473f00.6.azurestaticapps.net # Prod
+
+components:
+  securitySchemes:
+    JWTBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-bearerInfoFunc: security.jwt.jwt_bearer
+  schemas:
+    JsonObject:
+      type: object
+      additionalProperties: true
+      description: Arbitrary JSON object
+    ClientDTO:
+      type: object
+      properties:
+        client_id:
+         type: integer
+         example: 1
+        client_name:
+          type: string
+          example: Wireconn
+        status:
+          type: string
+          example: ACTIVE
+    UserDTO:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          example: 101
+        username:
+          type: string
+          example: admin@wireconn.com
+        status:
+          type: string
+          example: ACTIVE
+    ClientUserDTO:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        user_id:
+          type: integer
+          example: 101
+        client_id:
+          type: integer
+          example: 1
+    ReconRuleDTO:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        rulename:
+          type: string
+          example: Rule Name
+        descr:
+          type: string
+          example: Rule Description
+        script_type:
+          type: string
+          example: Rule Name
+        script:
+          type: string
+          example: Query / Javascript
+
+    PaginationResponse:
+      type: object
+      properties:
+        total:
+          type: integer
+          example: 100
+        page:
+          type: integer
+          example: 1
+        size:
+          type: integer
+          example: 100
+        data:
+          type: array
+          items:
+            type: object
+security:
+  - JWTBearer: []
+
+paths:
+  /client/readall:
+    get:
+      tags: [Client Management]
+      summary: Get all clients
+      description: |
+        Fetches a paginated list of all clients.
+        Supports pagination using:
+        - page (default = 1)
+        - size (default = 10)
+      operationId: handlers.ClientHandler.read_clients
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: |
+            Successfully retrieved client list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationResponse"
+                  - properties:
+                      data:
+                        items:
+                          $ref: "#/components/schemas/ClientDTO"
+      "401":
+        description: Unauthorized
+
+  /client/create:
+    post:
+      tags: [Client Management]
+      summary: Create client
+      description: |
+        Creates a new client.
+        Required fields:
+        - client_name
+        - status
+      operationId: handlers.ClientHandler.create_client
+      requestBody:
+        required: true
+        description: Client details
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_name, status]
+              properties:
+                client_name:
+                  type: string
+                  description: Name of client
+                  example: Wireconn
+                status:
+                  type: string
+                  description: ACTIVE / INACTIVE
+                  example: ACTIVE
+      responses:
+        "200":
+          description: Client created successfully
+        "400":
+          description: Invalid input data
+        "401":
+          description: Unauthorized
+
+  /client/update:
+    post:
+      tags: [Client Management]
+      summary: Update client
+      description: |
+        Updates an existing client.
+        client_id is required to identify the record.
+      operationId: handlers.ClientHandler.update_client
+      requestBody:
+        required: true
+        description: Updated client data
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id:
+                  type: integer
+                  example: 1
+                client_name:
+                  type: string
+                status:
+                  type: string
+      responses:
+        "200":
+          description: Client updated successfully
+        "400":
+          description: Invalid input
+        "401":
+          description: Unauthorized
+  
+  /clientuser/readall:
+    get:
+      tags: [Client User Management]
+      summary: Get client users
+      description: |
+        Fetch list of users mapped to clients.
+        Supports pagination.
+      operationId: handlers.ClientUserHandler.read_client_user
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Client user list retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationResponse"
+                  - properties:
+                      data:
+                        items:
+                          $ref: "#/components/schemas/ClientUserDTO"
+        "401":
+          description: Unauthorized
+  /clientuser/create:
+    post:
+      tags: [Client User Management]
+      summary: Create client user
+      description: |
+        Creates a new user under a specific client.
+        Requires user_id and client_id.
+      operationId: handlers.ClientUserHandler.create_client_user
+      requestBody:
+        required: true
+        description: Client user mapping data
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, client_id]
+              properties:
+                user_id:
+                  type: integer
+                  example: 101
+                client_id:
+                  type: integer
+                  example: 1
+      responses:
+        "200":
+          description: Client user created successfully
+        "400":
+          description: Invalid input
+        "401":
+          description: Unauthorized
+  /users/readall:
+    get:
+      tags: [User Management]
+      summary: Get all users
+      description: |
+        Fetch paginated list of all users.
+      operationId: handlers.UserHandler.read_users
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: User list retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationResponse"
+                  - properties:
+                      data:
+                        items:
+                          $ref: "#/components/schemas/UserDTO"
+        "401":
+          description: Unauthorized
+  /users/createuser:
+    post:
+      tags: [User Management]
+      summary: Create user
+      description: |
+        Creates a new user in the system.
+      operationId: handlers.UserHandler.create_user
+      requestBody:
+        required: true
+        description: User details
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                status:
+                  type: string
+      responses:
+        "200":
+          description: User created successfully
+        "400":
+          description: Invalid input
+        "401":
+          description: Unauthorized
+
+  /users/updateuser:
+    post:
+      tags: [User Management]
+      summary: Update user
+      description: |
+        Updates an existing user.
+      operationId: handlers.UserHandler.update_user
+      requestBody:
+        required: true
+        description: Updated user data
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: integer
+                username:
+                  type: string
+                status:
+                  type: string
+      responses:
+        "200":
+          description: User updated successfully
+        "400":
+          description: Invalid input
+        "401":
+          description: Unauthorized
+
+  /users/authenticate:
+    post:
+      security: []
+      tags: [User Authentication]
+      summary: User Login
+      description: |
+        This API authenticates a user and generates a JWT access token.
+        The user must provide valid credentials (username and password).
+
+        Optionally, a client_id can be provided to scope the authentication.
+        If authentication is successful, a JWT token is returned.
+        This token must be used in all secured APIs.
+      operationId: handlers.AuthHandler.login
+      requestBody:
+        required: true
+        description: |
+          JSON payload containing user login credentials.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  description: Registered user email or username
+                  example: admin@wireconn.com
+                password:
+                  type: string
+                  description: User password
+                  example: test123
+                client_id:
+                  type: string
+                  example: "12345"
+      responses:
+        "200":
+          description: |
+            Authentication successful.
+            Returns a JWT access token which should be used in
+            Authorization header for all secured APIs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: Bearer
+        "400":
+          description: |
+            Invalid credentials.
+            Possible reasons:
+            - Incorrect username or password
+            - User does not exist
+            - User inactive
+        "401":
+          description: Unauthorized access
+
+  /fileuploads/readall:
+    get:
+      tags: [File Uploads]
+      summary: Get uploaded files
+      description: |
+        Fetch list of uploaded files with pagination.
+      operationId: handlers.FileUploadHandler.read_fileupload_data
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: size
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: File upload list retrieved
+        "401":
+          description: Unauthorized
+
+  /file/download:
+    get:
+      tags: [File Download]
+      summary: Download the various recon files
+      description: |
+        Based on the given file id, this service is used to download the file
+      operationId: handlers.FileUploadHandler.download_file
+      parameters:
+        - name: file_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            default: 1
+      responses:
+        "200":
+          description: Paginated File Uploads
+          headers:
+            Content-Disposition:
+              description: Attachment filename
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: File not found
+
+  /fileuploads/upload:
+    post:
+      tags: [File Uploads]
+      summary: Upload files
+      description: |
+        Upload one or multiple files for reconciliation.
+      operationId: handlers.FileUploadHandler.upload
+      requestBody:
+        required: true
+        description: File upload request
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                recon_file_type:
+                  type: string
+                recon_file_desc:
+                  type: string
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "200":
+          description: Upload successful
+        "400":
+          description: Invalid file
+        "401":
+          description: Unauthorized
+  
+  /processrecon/generate_report:
+    post:
+      tags: [Process Recon]
+      summary: Generate report
+      description: |
+        Generates reconciliation report based on date range.
+        This process runs asynchronously.
+      operationId: handlers.ReconReportBatchHandler.generate_report
+      requestBody:
+        required: true
+        description: Date range for report generation
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [start_date, end_date]
+              properties:
+                start_date:
+                  type: string
+                  format: date
+                  example: "2023-01-01"
+                end_date:
+                  type: string
+                  format: date
+                  example: "2023-01-31"
+      responses:
+        "200":
+          description: Report generation initiated successfully
+        "400":
+          description: Invalid date range or request data
+        "401":
+          description: Unauthorized
+
+  /processrecon/readall:
+    get:
+      tags: [Process Recon]
+      summary: Get process recon execution history
+      description: |
+        Fetch a paginated list of process reconciliation runs.
+      operationId: handlers.ReconReportBatchHandler.read_process_recon
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Successfully retrieved process recon history
+        "401":
+          description: Unauthorized
+  
+  /applicationcfg/readcfg:
+  get:
+    tags: [Read Configuration]
+    summary: Read application related configurations
+    description: |
+      Read application related configurations
+    operationId: handlers.AppCfgHandler.get_cfg_values
+    parameters:
+      - name: cfgkey
+        in: query
+        required: false
+        schema:
+          type: string
+    responses:
+      "200":
+        description: Paginated File Uploads
+  
+  /userrole/readall:
+  get:
+    tags:
+      - User role
+    operationId: handlers.UserRoleHandler.get_user_role
+    responses:
+      "200":
+        description: User Roles
+
+  /rule/readall:
+    post:
+      tags: [Recon Rules]
+      summary: Get all configured recon rules
+      description: |
+        Get all configured recon rules.
+        Supports pagination using:
+        - page (default = 1)
+        - size (default = 10)
+      operationId: handlers.ReconRuleScriptHandler.read_recon_rules
+      requestBody:
+        required : true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [page, size]
+              properties:
+                page:
+                  type: integer
+                  description: Page index
+                  example: 1
+                size:
+                  type: integer
+                  description: Number of items to show
+                  example: 10
+      responses:
+        "200":
+          description: Get Recon rule
+
+  /rule/save:
+  post:
+    tags: [Recon Rules]
+    summary: Get all configured recon rules
+    description: |
+      Save Recon Rule configuration.
+    operationId: handlers.ReconRuleScriptHandler.save_script
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            properties:
+              id:
+                type: string
+                example: 1
+              rulename:
+                type: string
+                example: Rule Name
+              desc:
+                type: string
+                example: Rule Description
+              scriptType:
+                type: string
+                example: Query / Javascript
+              script:
+                type: string
+                example: Code
+    responses:
+      "200":
+        description: File uploaded successfully
+
+  /workflow/readall:
+  get:
+    tags: [Workflow Process]
+    summary: Get all configured Workflow Process
+    description: |
+      Get all configured Workflow Process
+    operationId: handlers.ReconRuleWorkflowHandler.get_recon_workflow
+    responses:
+      "200":
+        description: Get Workflow
+
+/workflow/readworkflowrules:
+  get:
+    tags: [Workflow Process]
+    summary: Get Workflow Process details
+    description: |
+      Get Workflow Process details for the given workflowId
+    operationId: handlers.ReconRuleWorkflowHandler.get_recon_workflow_rules
+    parameters:
+      - name: workflowId
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+    responses:
+      "200":
+        description: Get Workflow
+
+  /workflow/save:
+  post:
+    tags: [Workflow Process]
+    summary: Create a new Workflow process
+    description: |
+      Create a new Workflow process
+    operationId: handlers.ReconRuleWorkflowHandler.create_new
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            properties:
+              workflowname:
+                type: string
+    responses:
+      "200":
+        description: Workflow Created Successfully
+
+  /workflow/saverules:
+    post:
+      tags: [Workflow Process]
+      summary: Save workflow process
+      description: |
+        Save workflow process
+      operationId: handlers.ReconRuleWorkflowHandler.save_rules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              items:
+                type: object
+                additionalProperties: true
+      responses:
+        "200":
+          description: Save Workflow rules
+  /genericdata/readalldata:
+  get:
+    tags:
+      - Generic Data
+    operationId: handlers.GenericDataHandler.read_all_data
+    parameters:
+      - name: file_type
+        in: query
+        required: false
+        schema:
+          type: string
+    responses:
+      "200":
+        description: Generic Data
+
+  /genericdata/readall:
+    post:
+      tags:
+        - Generic Data
+      operationId: handlers.GenericDataHandler.read_generic_data
+      requestBody:
+        required : true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties : true
+      responses:
+        "200":
+          description: Generic Data
+  
+  /report/download:
+  get:
+    tags: [Report Download]
+    summary: Download report
+    description: |
+      Downloads reconciliation report using report_id.
+    operationId: handlers.ReportDownloadHandler.download_report
+    parameters:
+      - name: report_id
+        in: query
+        required: true
+        description: Unique report identifier
+        schema:
+          type: integer
+    responses:
+      "200":
+        description: Excel file downloaded successfully
+        headers:
+          Content-Disposition:
+            description: Attachment filename
+            schema:
+              type: string
+        content:
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+            schema:
+              type: string
+              format: binary
+      "404":
+        description: Report not found
+  

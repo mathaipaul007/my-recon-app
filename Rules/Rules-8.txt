@@ -1,0 +1,145 @@
+/*******************************************************************************
+  SECTION 1: DATABASE QUERIES (Image 3)
+*******************************************************************************/
+
+SELECT * FROM recon_workflow WHERE id = '8';
+
+SELECT * FROM recon_rule_workflow rw
+JOIN recon_rule_script_cfg rc ON rw.ruleid = rc.id
+WHERE workflowid = 8
+ORDER BY run_seq;
+
+
+/*******************************************************************************
+  SECTION 2: RULE #8 PREMIER-CREDIT-MEMO (Image 3)
+*******************************************************************************/
+
+--- PREMIER-SUM-AMOUNT ---
+FromBMOFundingFile()
+    .find("settlement_no", sum_("amounts").as_("sum_amt"))
+    .grouped_by("settlement_no")
+
+--- COMPARE-SUM-INPUT-PREMIER ---
+FromInputStatement()
+    .find(col("id").as_("bmoinputid"),
+    const(input["settlement_no"]).as_("sr_no"))
+    .where(jcol("description").contains("%0055%"))
+    .and_(jnum("net").rounded_abs_eq(input["sum_amt"], 2))
+
+--- GET-PREMIER-CHECK-BY-CHECK ---
+FromBMOFundingFile()
+    .find(UploadRawData.id.label("bmofundid"), pg_safe_numeric(UploadRawData.json_data, "amounts").label("bmoamount"),
+    literal(item["bmoinputid"]).label("bmoinputid"), literal(item["sr_no"]).label("sr_no"))
+    .where(jcol("settlement_no").is_(item["sr_no"]))
+    .and_(jcol("details").is_("BMO -Checks"))
+    .and_(col("cleared_status").is_("U"))
+
+FromBMOFundingFile()
+    .find(UploadRawData.id.label("bmofundid"), jnum("amounts").as_("bmoamount"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["sr_no"]).as_("sr_no"))
+    .where(jcol("settlement_no").is_(item["sr_no"]))
+    .and_(jcol("details").is_("BMO -Checks"))
+    .and_(col("cleared_status").is_("U"))
+
+
+/*******************************************************************************
+  SECTION 3: MATCHING AND FILTERING LOGIC (Image 4)
+*******************************************************************************/
+
+--- MATCH-NETPAY-PREMIER-CHECK-BY-SRNO ---
+FromNetPayRegistry()
+    .find("settlement_run", func.sum(pg_safe_numeric(UploadRawData.json_data, "net_pay")), literal(item["bmoinputid"])
+    .label("bmoinputid"), literal(item["bmofundid"]).label("bmofundid"))
+    .where(jcol("settlement_run").is_(item["sr_no"]))
+    .and_(jcol("Company").is_("Bank of Montreal"))
+    .and_(jcol("Check_Num") != 0)
+    .and_(col("cleared_status").is_("U"))
+    .grouped_by("settlement_run")
+    .having(func.sum(pg_safe_numeric(UploadRawData.json_data, "net_pay")) == func.round(cast(item["bmoamount"], Numeric), 2))
+
+FromNetPayRegistry()
+    .find("settlement_run", 
+    sum_("net_pay"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["bmofundid"]).as_("bmofundid"))
+    .where(jcol("settlement_run").is_(item["sr_no"]))
+    .and_(jcol("Company").is_("Bank of Montreal"))
+    .and_(jcol("Check_Num") != 0)
+    .and_(col("cleared_status").is_("U"))
+    .grouped_by("settlement_run")
+    .having(sum_("net_pay").eq(func.round(cast(item["bmoamount"], Numeric), 2)))
+
+--- FILTER-NETPAY-PREMIER-CHECKS-NOT-IN-STPV ---
+FromNetPayRegistry()
+    .find("settlement_run", "Check_Num", UploadRawData.id.label("netpayid"), literal(item["bmoinputid"]).label("bmoinputid")
+    , literal(item["bmofundid"]).label("bmofundid"), pg_safe_numeric(UploadRawData.json_data, "net_pay").label("net_pay"))
+    .where(jcol("settlement_run").is_(item["settlement_run"]))
+    .and_(jcol("Company").is_("Bank of Montreal"))
+    .and_(jcol("Check_Num") != 0)
+    .and_(col("cleared_status").is_("U"))
+    .and_(pg_safe_numeric(UploadRawData.json_data, "Check_Num").not_in(FromSTPV().
+    find(pg_safe_numeric(UploadRawData.json_data, "serial_number")).as_scalar_subquery()))
+
+FromNetPayRegistry()
+    .find("settlement_run", "Check_Num", 
+    col("id").as_("netpayid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    jnum("net_pay").as_("net_pay"))
+    .where(jcol("settlement_run").is_(item["settlement_run"]))
+    .and_(jcol("Company").is_("Bank of Montreal"))
+    .and_(jcol("Check_Num") != 0)
+    .and_(col("cleared_status").is_("U"))
+    .and_(pg_safe_numeric(UploadRawData.json_data, "Check_Num").not_in(FromSTPV().
+    find(pg_safe_numeric(UploadRawData.json_data, "serial_number")).as_scalar_subquery()))
+
+
+/*******************************************************************************
+  SECTION 4: FINAL MATCHING AND REPORTING (Image 5)
+*******************************************************************************/
+
+--- MATCH-INPUT-RECON-CHECK-BY-CHECK-NETPAY ---
+FromInputStatement()
+    .find(UploadRawData.id.label("cheque_id"), literal(item["Check_Num"]).label("cheque"), literal(item["settlement_run"])
+    .label("settlement_run"), literal(item["bmoinputid"]).label("bmoinputid"), literal(item["bmofundid"]).label("bmofundid"),
+    literal(item["netpayid"]).label("netpayid"))
+    .where(col("cleared_status").is_("U"))
+    .and_(func.substring(UploadRawData.json_data.op("->>")("description"), r"Cheque\s,\s*NO\.( \d+)") == item["Check_Num"])
+    .and_(cast(item["net_pay"], Numeric) == pg_safe_numeric(UploadRawData.json_data, "net"))
+
+FromInputStatement()
+    .find(col("id").as_("cheque_id"),
+    const(input["Check_Num"]).as_("cheque"),
+    const(input["settlement_run"]).as_("settlement_run"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["netpayid"]).as_("netpayid"))
+    .where(col("cleared_status").is_("U"))
+    .and_(func.substring(UploadRawData.json_data.op("->>")("description"), r"Cheque\s,\s*NO\.( \d+)") == input["Check_Num"])
+    .and_(cast(item["net_pay"], Numeric) == pg_safe_numeric(UploadRawData.json_data, "net"))
+
+--- GET-PREMIER-CHECK-NO-Report ---
+with_aliases(
+    UploadRawData, "bmodata", "bmofunding", "netpay",
+    lambda bmodata, bmofunding, netpay:
+    Q(bmodata)
+        .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+        .join(netpay, on=netpay.id == input["netpayid"])
+        .find(func.replace(func.concat(bmodata.json_data["description"].astext, bmodata.json_data["net"].astext), ' ', '').label("DESCRIPTION"),
+        literal("Funding").label("CATEGORY"),
+        bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+        bmofunding.json_data["details"].astext.label("TYPE"),
+        func.round(pg_safe_numeric(netpay.json_data, "net_pay"), 2).label("AMOUNT"),
+        netpay.json_data["employee_id"].astext.label("EIN"),
+        netpay.json_data["Check_Num"].astext.label("CHECK #"),
+        bmodata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmodata.id == input["bmoinputid"])
+)
+
+--- GET-PREMIER-INPUT-CHECK-NO-Report ---
+FromInputStatement().
+    find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"), 2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"))
+    .where(UploadRawData.id == input["cheque_id"])

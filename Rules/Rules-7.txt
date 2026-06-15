@@ -1,0 +1,84 @@
+/*******************************************************************************
+  SECTION 1: DATABASE QUERIES (File 1)
+*******************************************************************************/
+
+-- Retrieve workflow configuration
+SELECT * FROM recon_workflow WHERE id = '7';
+
+-- Retrieve rule scripts and execution sequence
+SELECT * FROM recon_rule_workflow rw
+JOIN recon_rule_script_cfg rc ON rw.ruleid = rc.id
+WHERE workflowid = 7
+ORDER BY run_seq;
+
+
+/*******************************************************************************
+  SECTION 2: RULE #5 CHEQUE-RETURNED-CHEQUE (File 1)
+*******************************************************************************/
+
+--- GET-CHECK-NOS ---
+
+FromInputStatement()
+    .find(col("id").as_("cheque_id"),
+    func.substring(UploadRawData.json_data.op("->>")("description"), r"Cheque\s,\s*NO\.( \d+)").label("cheque"))
+    .where(col("cleared_status").is_("U"))
+
+FromInputStatement()
+    .find(col("id").as_("cheque_id"),
+    func.substring(jcol("description").value(), r"Cheque\s,\s*NO\.( \d+)").label("cheque"))
+    .where(col("cleared_status").is_("U"))
+
+
+--- MATCH-RETURNED-CHECK-NOS ---
+
+FromInputStatement()
+    .find(const(input["cheque_id"]).as_("cheque_id"),
+    col("id").as_("return_cheque_id"),
+    const(input["cheque"]).as_("chequeno"))
+    .where(col("cleared_status").is_("U"))
+    .and_(cast(literal(input["cheque"]), String) == func.substring(UploadRawData.json_data.op("->>")("description"), r"RETURNED ITEM NO\.\s*(\d+)"))
+
+FromInputStatement()
+    .find(const(input["cheque_id"]).as_("cheque_id"),
+    col("id").as_("return_cheque_id"),
+    const(input["cheque"]).as_("chequeno"))
+    .where(col("cleared_status").is_("U"))
+    .and_(input["cheque"] == func.substring(jcol("description").value(), r"RETURNED ITEM NO\.\s*(\d+)"))
+
+
+/*******************************************************************************
+  SECTION 3: REPORTING LOGIC (File 2)
+*******************************************************************************/
+
+--- GET-CHECK-NO-Report ---
+
+FromInputStatement()
+    .find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"), 2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    literal(item["chequeno"]).label("CHECK #"))
+    .where(UploadRawData.id == item["cheque_id"])
+
+FromInputStatement()
+    .find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"), 2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    literal(input["chequeno"]).label("CHECK #"))
+    .where(col("id").is_(input["cheque_id"]))
+
+
+--- GET-RETURNED-CHECK-NO-Report ---
+
+FromInputStatement()
+    .find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"), 2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    literal(item["chequeno"]).label("CHECK #"))
+    .where(UploadRawData.id == item["return_cheque_id"])
+
+FromInputStatement()
+    .find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data, "net"), 2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    const(input["chequeno"]).as_("CHECK #"))
+    .where(col("id").is_(input["return_cheque_id"]))

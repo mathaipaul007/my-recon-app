@@ -1,0 +1,135 @@
+-- SQL WORKFLOW INITIALIZATION
+select * from recon_workflow where id='11';
+
+select * from recon_rule_workflow rw
+join recon_rule_script_cfg rc
+on rw.ruleid=rc.id
+where workflowid=11
+order by run_seq;
+/* Rule #11 NPREIS-Premier-DeductionGL */
+
+// PREMIER-SUM-AMOUNT
+FromBMOFundingFile().
+find("settlement_no", sum_("amounts").as_("sum_amt")).
+grouped_by("settlement_no")
+
+// COMPARE-SUM-INPUT-PREMIER
+FromInputStatement().
+find(col("id").as_("bmoinputid"),
+const(input["settlement_no"]).as_("sr_no")).
+where(jcol("description").contains("%0055%")).
+and_(jnum("net").rounded_abs_eq(input["sum_amt"],2))
+
+// GET-PREMIER-AMOUNT-BY-NPREIS
+FromBMOFundingFile()
+.find(col("id").as_("bmofundid"),
+pg_safe_numeric(UploadRawData.json_data,"amounts").label("bmoamount") ,
+const(input["bmoinputid"]).as_("bmoinputid") ,
+const(input["sr_no"]).as_("sr_no"),
+jcol("pay_date").as_("pay_date"),
+const(input["bmoinputid"]).as_("bmoinputid"))
+.where(jcol("settlement_no").is_(input["sr_no"]))
+.and_(jcol("details").is_("NPREIS"))
+.and_(col("cleared_status").is_("U"))
+
+// GET-DEDUCTIONGL-SUM-AMOUNT-BY-NPREIS
+FromDeductionGL()
+.find(sum_("sum_amount").as_("ded_sum_amt"),
+const(input["sr_no"]).as_("sr_no"),
+const(input["bmoamount"]).as_("bmoamount"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"))
+.where(jcol("settlement_no").is_(input["sr_no"]))
+.and_(jcol("company").is_("Bank of Montreal"))
+.and_(jcol("deduction").contains("NPREIS"))
+.and_(col("cleared_status").is_("U"))
+
+// GET-DEDUCTIONGL-FILTER-BY-NPREIS-AMOUNT
+FromDeductionGL()
+.find(const(input["sr_no"]).as_("sr_no"),
+col("id").as_("dgl_id"),
+jcol("sum_amount").as_("ded_amt"),
+jcol("employee_id").as_("ded_ein"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"))
+.where(jcol("settlement_no").is_(input["sr_no"]))
+.and_(jcol("company").is_("Bank of Montreal"))
+.and_(jcol("deduction").contains("NPREIS"))
+.and_(input["ded_sum_amt"] == cast(input["bmoamount"], Numeric))
+.and_(col("cleared_status").is_("U"))
+
+// GET-DEGL-DEFT-RETURNED-TXNS-INPUT-DATA
+FromInputStatement()
+.find(col("id").as_("input_id"),
+jcol("value_date").as_("inp_value_date"),
+jcol("posted").as_("inp_posted"),
+jcol("net").as_("net"),
+const(input["ded_amt"]).as_("ded_amt") ,
+const(input["ded_ein"]).as_("ded_ein"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["dgl_id"]).as_("dgl_id"))
+.where(jcol("description").contains("%Not Service Chargeable , DEFT RETURNED TXNS%"))
+
+// GET-DEGL-ACHREJECT-DATA-SUM-AMOUNT-GROUPBY-VALUEDATE-RUN-DATE
+FromAchRejectTracking()
+.find(sum_("amount"),"run_date", "value_date",
+const(input["net"]).as_("net"),
+const(input["ded_amt"]).as_("ded_amt"),
+const(input["ded_ein"]).as_("ded_ein"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["input_id"]).as_("input_id"),
+const(input["dgl_id"]).as_("dgl_id"))
+.where(jcol("value_date").is_(input["inp_value_date"]))
+.and_(jcol("run_date").is_(input["inp_posted"]))
+.and_(jcol("type_of_reject").is_("260"))
+.and_(jcol("deb_cred").is_("Credit"))
+.grouped_by("value_date", "run_date")
+
+// GET-DEGL-ACHREJECT-DATA-SUM-AMOUNT-MATCHING-AMOUNT
+FromAchRejectTracking()
+.find(col("id").as_("achid"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["input_id"]).as_("input_id"),
+const(input["dgl_id"]).as_("dgl_id"),
+const(input["ded_ein"]).as_("ein"))
+.where(jcol("value_date").is_(input["value_date"]))
+.and_(jcol("run_date").is_(input["run_date"]))
+.and_(jcol("type_of_reject").is_("260"))
+.and_(jcol("deb_cred").is_("Credit"))
+.and_(jcol("ein").is_(input["ded_ein"]))
+.and_(cast(input["sum"], Numeric) == func.abs(cast(input["net"], Numeric)))
+.and_(pg_safe_numeric(UploadRawData.json_data, "amount") == func.abs(cast(input["ded_amt"] , Numeric)))
+
+// GET-PREMIER-DEDUCTION-GL-Report
+with_aliases(
+    UploadRawData, "bmodata", "bmofunding", "dgldata",
+    lambda bmodata, bmofunding, dgldata:
+    Q(bmodata)
+        .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+        .join(dgldata, on=dgldata.id == input["dgl_id"])
+        .find(func.replace(func.concat(bmodata.json_data["description"].astext, bmodata.json_data["net"].astext, '','').label("DESCRIPTION"),
+        literal("Funding").label("CATEGORY"),
+        bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+        bmofunding.json_data["details"].astext.label("TYPE"),
+        func.round(pg_safe_numeric(dgldata.json_data,"sum_amount"),2).label("AMOUNT"),
+        literal(input["ein"]).label("EIN"),
+        bmodata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmodata.id == input["bmoinputid"])
+)
+
+// GET-PREMIER-INPUT-STAT-DEDUCTION-GL-ACH-REJECT-Report
+with_aliases(
+    UploadRawData, "inputdata", "achdata",
+    lambda inputdata, achdata:
+    Q(inputdata)
+        .join(achdata, on=achdata.id == input["achid"])
+        .find(literal("DEFR-260").label("CATEGORY"),
+        func.round(pg_safe_numeric(achdata.json_data,"amount"),2).label("AMOUNT"),
+        literal(input["ein"]).label("EIN"),
+        inputdata.json_data["description"].astext.label("DESCRIPTION"),
+        inputdata.json_data["value_date"].astext.label("Value_Date"))
+        .where(inputdata.id == input["input_id"])
+)

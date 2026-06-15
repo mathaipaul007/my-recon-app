@@ -1,0 +1,159 @@
+/*******************************************************************************
+  SECTION 1: DATABASE QUERIES (Image 10)
+*******************************************************************************/
+
+SELECT * FROM recon_workflow WHERE id = '9';
+
+SELECT * FROM recon_rule_workflow rw
+JOIN recon_rule_script_cfg rc ON rw.ruleid = rc.id
+WHERE workflowid = 9
+ORDER BY run_seq;
+
+
+/*******************************************************************************
+  SECTION 2: RULE #8 ACH-Reject-Credit (Image 10)
+*******************************************************************************/
+
+--- PREMIER-SUM-AMOUNT ---
+FromBMOFundingFile()
+    .find("settlement_no", sum_("amounts").as_("sum_amt"))
+    .grouped_by("settlement_no")
+
+--- COMPARE-SUM-INPUT-PREMIER ---
+FromInputStatement()
+    .find(col("id").as_("bmoinputid"),
+    const(input["settlement_no"]).as_("sr_no"))
+    .where(jcol("description").contains("%0055%"))
+    .and_(jnum("net").rounded_abs_eq(input["sum_amt"], 2))
+
+--- GET-PREMIER-AMOUNT-BY-REVERSAL ---
+FromBMOFundingFile()
+    .find(col("id").label("bmofundid"),
+    jnum("amounts").as_("bmoamount"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["sr_no"]).as_("sr_no"),
+    jcol("pay_date").as_("pay_date"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("settlement_no").is_(input["sr_no"]))
+    .and_(jcol("details").is_("reversal"))
+    .and_(col("cleared_status").is_("U"))
+
+
+/*******************************************************************************
+  SECTION 3: NETPAY REGISTRY & RECALL LOGIC (Image 11)
+*******************************************************************************/
+
+--- GET-NETPAY-REGISTRY-BY-PREMIER-REVERSAL ---
+FromReversalNetPayRegistry()
+    .find(sum_("net_pay").as_("sum_amt"),
+    const(input["pay_date"]).as_("pay_date"),
+    const(input["bmoamount"]).as_("bmoamount"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("lookup_company_id").is_("BMO"))
+    .and_(jcol("result_type_descr").is_("Reversal"))
+    .and_(jcol("payment_date_rev_date").is_(input["pay_date"]))
+
+--- GET-NETPAY-REGISTRY-BY-PREMIER-REVERSAL-MATCHING-SUM ---
+FromReversalNetPayRegistry()
+    .find(const(input["pay_date"]).as_("pay_date"),
+    jcol("employee_id").as_("rev_eeid"),
+    col("id").label("rev_netpayid"),
+    jnum("net_pay").as_("rev_netpay"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("lookup_company_id").is_("BMO"))
+    .and_(jcol("result_type_descr").is_("Reversal"))
+    .and_(jcol("payment_date_rev_date").is_(input["pay_date"]))
+    .and_(input["sum_amt"] == input["bmoamount"])
+
+--- GET-INPUT-BY-RECALL-VALUE ---
+FromInputStatement()
+    .find(UploadRawData.id.label("recallinputid"),
+    jcol("value_date").as_("value_date"),
+    const(input["rev_eeid"]).as_("rev_eeid"),
+    const(input["rev_netpayid"]).as_("rev_netpayid"),
+    const(input["rev_netpay"]).as_("rev_netpay"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("description").contains("%RECALLS%"))
+
+
+/*******************************************************************************
+  SECTION 4: ACH REJECT TRACKING (Image 12)
+*******************************************************************************/
+
+--- GET-ACH-REJECT-SUM-AMOUNT-BY-VALUE-DATE ---
+FromAchRejectTracking()
+    .find(sum_("amount"), "deb_cred", "value_date",
+    const(input["rev_eeid"]).as_("rev_eeid"),
+    const(input["rev_netpayid"]).as_("rev_netpayid"),
+    const(input["rev_netpay"]).as_("rev_netpay"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("value_date").is_(input["value_date"]))
+    .and_(jcol("type_of_reject").is_("240"))
+    .grouped_by("value_date", "deb_cred")
+
+--- MATCH-ACH-REJECT-BY-VALUE-DATE-TYPE-OF-REJECT ---
+FromAchRejectTracking()
+    .find(const(input["sum"]).as_("sum_amt"),
+    const(input["deb_cred"]).as_("deb_cred"),
+    const(input["value_date"]).as_("value_date"),
+    const(input["rev_eeid"]).as_("rev_eeid"),
+    pg_json_text(UploadRawData.json_data, "ein").label("ach_eeid"),
+    pg_safe_numeric(UploadRawData.json_data, "amount").label("ach_amount"),
+    const(input["rev_netpayid"]).as_("rev_netpayid"),
+    const(input["rev_netpay"]).as_("rev_netpay"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("value_date").is_(input["value_date"]))
+    .and_(jcol("type_of_reject").is_("240"))
+    .and_(jcol("deb_cred").is_(input["deb_cred"]))
+
+--- GET-INPUT-STATEMENT-BY-CREDIT-VALUE ---
+FromInputStatement()
+    .find(col("id").as_("input_id"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["ach_eeid"]).as_("eeid"))
+    .where(jcol("value_date").is_(input["value_date"]))
+    .and_(pg_safe_numeric(UploadRawData.json_data, "credit") == input["sum_amt"])
+    .and_(input["deb_cred"] == "Credit")
+    .and_(cast(input["rev_eeid"], Numeric) == cast(input["ach_eeid"], Numeric))
+    .and_(func.abs(input["rev_netpay"]) == func.abs(input["ach_amount"]))
+
+
+/*******************************************************************************
+  SECTION 5: REPORTING (Image 13)
+*******************************************************************************/
+
+--- PREMIER-ACH-REJECT-Report ---
+with_aliases(
+    UploadRawData, "bmodata", "bmofunding",
+    lambda bmodata, bmofunding:
+    Q(bmodata)
+        .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+        .find(func.replace(func.concat(bmodata.json_data["description"].astext, bmodata.json_data["net"].astext), ' ', '').label("DESCRIPTION"),
+        literal("Funding").label("CATEGORY"),
+        bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+        bmofunding.json_data["details"].astext.label("TYPE"),
+        literal(input["eeid"]).label("EIN"),
+        func.round(pg_safe_numeric(bmofunding.json_data, "amounts"), 2).label("AMOUNT"),
+        bmodata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmodata.id == input["bmoinputid"])
+)
+
+--- PREMIER-INPUT-STAT-ACH-REJECT-Report ---
+with_aliases(
+    UploadRawData, "inputdata", "bmofunding",
+    lambda inputdata, bmofunding:
+    Q(inputdata)
+        .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+        .find(inputdata.json_data["description"].astext.label("DESCRIPTION"),
+        inputdata.json_data["value_date"].astext.label("Value_Date"),
+        literal("DEFR-240").label("CATEGORY"),
+        literal(input["eeid"]).label("EIN"),
+        func.round(pg_safe_numeric(bmofunding.json_data, "amounts"), 2).label("AMOUNT"))
+        .where(inputdata.id == input["input_id"])
+)

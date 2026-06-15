@@ -1,0 +1,202 @@
+-- SQL SECTION
+select * from recon_workflow where id='10';
+
+select * from recon_rule_workflow rw
+join recon_rule_script_cfg rc
+on rw.ruleid=rc.id
+where workflowid=10
+order by run_seq;
+
+// Rule #8 PREMIER-Advice-Hana
+
+// PREMIER-SUM-AMOUNT
+FromBMOFundingFile().
+find("settlement_no", sum_("amounts").as_("sum_amt")).
+grouped_by("settlement_no")
+
+// COMPARE-SUM-INPUT-PREMIER
+FromInputStatement().
+find(col("id").as_("bmoinputid"),
+const(input["settlement_no"]).as_("sr_no")).
+where(jcol("description").contains("%0055%")).
+and_(jnum("net").rounded_abs_eq(input["sum_amt"],2))
+
+// GET-PREMIER-AMOUNT-BY-HANA
+FromBMOFundingFile()
+    .find(col("id").label("bmofundid"), pg_safe_numeric(UploadRawData.json_data,"amounts").label("bmoamount"),
+    const(item["bmoinputid"]).label("bmoinputid"), const(item["sr_no"]).label("sr_no"), jcol("pay_date").label("pay_date"),
+    const(item["bmoinputid"]).label("bmoinputid"), jcol("details").label("details"))
+    .where(jcol("settlement_no").is_(item["sr_no"]))
+    .and_(jcol("details").contains("%Hana_Returned%"))
+    .and_(col("cleared_status").is_("U"))
+
+FromBMOFundingFile()
+    .find(col("id").as_("bmofundid"),
+    pg_safe_numeric(UploadRawData.json_data,"amounts").label("bmoamount"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["sr_no"]).as_("sr_no"),
+    jcol("pay_date").as_("pay_date"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    jcol("details").as_("details"))
+    .where(jcol("settlement_no").is_(input["sr_no"]))
+    .and_(jcol("details").contains("%Hana_Returned%"))
+    .and_(col("cleared_status").is_("U"))
+
+// EXTRACT-PAYREPORTDATE-CROSSCHARGEDATE-FROM-HANA-DETAILS
+function doProcess(param){
+    const mVal = String(param.details).replace(/[\u00A0\u200B\u200C\u200D\uFEFF]/g, " ")
+        .replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g,"-")
+        .replace(/\s+/g, " ").trim()
+    const m1 = mVal.match(/^\s*(\d{1,2})-(\d{1,2})-(\d{4})/);
+    const mm = Number(m1[1]);
+    const mmStr = (mm < 10) ? '0'+mm : ''+mm
+    const dd = Number(m1[2]);
+    const ddStr = (dd < 10) ? '0'+dd : ''+dd
+    const yyyy = Number(m1[3]);
+    
+    param.crossChargeDate = yyyy + '-' + mmStr + '-' + ddStr
+
+    const monthRegex = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{4})/g;
+    const last = mVal.match(monthRegex)[0].split(" ")
+
+    if (last) {
+        const monthName = last[0];
+        const day2 = Number(last[1]);
+        const year2 = Number(last[2]);
+
+        // Let JS parse month name reliably by using a canonical string.
+        const endDate = new Date(`${monthName} ${day2}, ${year2}`);
+        const yyyy = endDate.getFullYear();
+        const mm = endDate.getMonth() + 1;
+        const mmStr = (mm < 10) ? '0'+mm : ''+mm
+        const dd = endDate.getDate();
+        const ddStr = (dd < 10) ? '0'+dd : ''+dd
+
+        param.payReportDate = yyyy + '-' + mmStr + '-' + ddStr
+    }else{
+        param.payReportDate = mVal
+    }
+
+    return param
+}
+
+// GET-SUM-AMOUNT-GROUP-BY-COROSSCHARGE-PAYDATE
+FromHanaBreakUp()
+    .find(sum_("dr").as_("sum_amt"), const(item["crossChargeDate"]).label("crossChargeDate"),
+    const(item["payReportDate"]).label("payReportDate"), const(item["bmoamount"]).label("bmoamount"),
+    const(item["bmofundid"]).label("bmofundid"), const(item["bmoinputid"]).label("bmoinputid"))
+    .where(jcol("company").is_("BMO"))
+    .grouped_by("cross_charge", "pay_date")
+
+FromHanaBreakUp()
+    .find(sum_("dr").as_("sum_amt"),
+    const(input["crossChargeDate"]).as_("crossChargeDate"),
+    const(input["payReportDate"]).as_("payReportDate"),
+    const(input["bmoamount"]).as_("bmoamount"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("company").is_("BMO"))
+    .grouped_by("cross_charge", "pay_date")
+
+// GET-HANA-DATA-BY-COMPANY-CROSSCHARGE-PAYDATE
+FromHanaBreakUp()
+    .find("ein","dr",
+    col("id").label("hana_id"),
+    const(input["payReportDate"]).as_("payReportDate"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("company").is_("BMO"))
+    .and_(jcol("cross_charge").is_(input["crossChargeDate"]))
+    .and_(jcol("pay_date").is_(input["payReportDate"]))
+    .and_(input["sum_amt"] == cast(input["bmoamount"], Numeric))
+
+// GET-DEFT-RETURNED-TXNS-INPUT-DATA
+FromInputStatement()
+    .find(jcol("value_date").as_("inp_value_date"),
+    jcol("posted").as_("inp_posted"),
+    const(input["ein"]).as_("ein"),
+    const(input["dr"]).as_("hana_amount"),
+    const(input["payReportDate"]).as_("payReportDate"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["hana_id"]).as_("hana_id"))
+    .where(jcol("description").
+    contains("%Not Service Chargeable , DEFT RETURNED TXNS%"))
+
+// GET-ACHREJECT-DATA-SUM-AMOUNT-GROUPBY-VALUEDATE-RUN-DATE
+FromAchRejectTracking()
+    .find(sum_("amount"), "run_date", "value_date",
+    const(input["ein"]).as_("ein"),
+    const(input["hana_amount"]).as_("hana_amount"),
+    const(input["payReportDate"]).as_("payReportDate"),
+    const(input["inp_posted"]).as_("inp_posted"),
+    const(input["inp_value_date"]).as_("inp_value_date"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["hana_id"]).as_("hana_id"))
+    .where(jcol("value_date").is_(input["payReportDate"]))
+    .and_(jcol("run_date").is_(input["inp_posted"]))
+    .and_(jcol("type_of_reject").is_("260"))
+    .and_(jcol("deb_cred").is_("Debit"))
+    .grouped_by("value_date", "run_date")
+
+// GET-ACHREJECT-DATA-BY-VALUEDATE-RUNDATE-TYPEOFREJECT-DEBIT
+FromAchRejectTracking()
+    .find(col("id").as_("achid"),
+    jcol("ein").as_("ach_eeid"),
+    const(input["sum"]).as_("sum_amt"),
+    const(input["ein"]).as_("ein"),
+    const(input["inp_posted"]).as_("inp_posted"),
+    const(input["inp_value_date"]).as_("inp_value_date"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["hana_id"]).as_("hana_id"))
+    .where(jcol("value_date").is_(input["payReportDate"]))
+    .and_(jcol("run_date").is_(input["inp_posted"]))
+    .and_(jcol("type_of_reject").is_("260"))
+    .and_(jcol("deb_cred").is_("Debit"))
+    .and_(jcol("ein").is_(input["ein"]))
+    .and_(pg_safe_numeric(UploadRawData.json_data,"amount") == cast(input["hana_amount"], Numeric))
+
+// GET-INPUTDATA-BY-VALUEDATE-POSTED-SUMAMOUNT
+FromInputStatement()
+    .find(col("id").as_("input_id"),
+    const(input["bmofundid"]).as_("bmofundid"),
+    const(input["bmoinputid"]).as_("bmoinputid"),
+    const(input["ein"]).as_("ein"),
+    const(input["achid"]).as_("achid"),
+    const(input["hana_id"]).as_("hana_id"))
+    .where(jcol("value_date").is_(input["inp_value_date"]))
+    .and_(jcol("posted").is_(input["inp_posted"]))
+    .and_(pg_safe_numeric(UploadRawData.json_data, "net") == input["sum_amt"])
+
+// GET-PREMIER-HANA-Report
+with_aliases(
+    UploadRawData, "bmodata", "bmofunding", "hanadata",
+    lambda bmodata, bmofunding, hanadata:
+        Q(bmodata)
+            .join(bmofunding, on=bmofunding.id == input["bmofundid"])
+            .join(hanadata, on=hanadata.id == input["hana_id"])
+            .find(func.replace(func.concat(bmodata.json_data["description"].astext, bmodata.json_data["net"].astext, '','').label("DESCRIPTION"),
+            literal("Funding").label("CATEGORY"),
+            bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+            bmofunding.json_data["details"].astext.label("TYPE"),
+            func.round(pg_safe_numeric(hanadata.json_data, "dr"),2).label("AMOUNT"),
+            literal(input["ein"]).label("EIN"),
+            bmodata.json_data["value_date"].astext.label("Value_Date"))
+            .where(bmodata.id == input["bmoinputid"])
+)
+
+// GET-PREMIER-INPUT-STAT-HANA-ACH-REJECT-Report
+with_aliases(
+    UploadRawData, "inputdata", "achdata",
+    lambda inputdata, achdata:
+        Q(inputdata)
+            .join(achdata, on=achdata.id == input["achid"])
+            .find(literal("DEFR-260 DR").label("CATEGORY"),
+            func.round(pg_safe_numeric(achdata.json_data, "amount"),2).label("AMOUNT"),
+            literal(input["ein"]).label("EIN"),
+            inputdata.json_data["description"].astext.label("DESCRIPTION"),
+            inputdata.json_data["value_date"].astext.label("Value_Date"))
+            .where(inputdata.id == input["input_id"])
+)

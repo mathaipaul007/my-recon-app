@@ -1,0 +1,109 @@
+select * from recon_workflow where id='6'
+
+select * from recon_rule_workflow rw
+join recon_rule_script_cfg rc
+on rw.ruleid=rc.id
+where workflowid=6
+order by run_seq
+
+PREMIER-SUM-AMOUNT
+
+FromBMOFundingFile().
+find("settlement_no", sum_("amounts").as_("sum_amt")).
+grouped_by("settlement_no")
+
+COMPARE-SUM-INPUT-PREMIER
+FromInputStatement().
+find(col("id").as_("bmoinputid"),
+const(input["settlement_no"]).as_("sr_no")).
+where(jcol("description").contains("%0055%")).
+and_(jnum("net").rounded_abs_eq(input["sum_amt"],2))
+
+GET-PREMIER-LOCKBOX-BY-SRNO
+FromBMOFundingFile().
+find(col("id").as_("bmofundid"),
+jnum("amounts").as_("bmoamount"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["sr_no"]).as_("sr_no"),
+jcol("details").as_("details")).
+where(jcol("settlement_no").is_(input["sr_no"])).
+and_(jcol("details").contains("Lockbox adj")).
+and_(col("cleared_status").is_("U"))
+
+GET-LOCKBOX-UPLOAD-BY-FILENAME
+FromLockBoxUploadFiles().
+find(const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoamount"]).as_("bmoamount"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["sr_no"]).as_("sr_no"),
+col("upload_file_name").as_("upload_file_name"),
+col("id").as_("fileid")).
+post_filter(fuzzy_match("upload_file_name",input["details"],0.70))
+
+
+MATCH-LOCKBOX-SUM-OF-CHECKAMT-PREMIERAMT
+FromLockBoxFile().
+find(sum_("cheque_amount"),
+const(input["fileid"]).as_("fileid"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["sr_no"]).as_("sr_no")).
+where(col("file_id").is_(input["fileid"])).
+and_(jcol("company").contains("BMO")).
+grouped_by("funding_adj").
+having(sum_("cheque_amount").eq(func.abs(cast(input["bmoamount"], Numeric))))
+
+GET-LOCKBOX-CHECKAMT-SUM-GROUP-BY-FUNDINGADJ-REPORTDATE
+FromLockBoxFile().
+find("funding_adj","report_date",sum_("cheque_amount").as_("sum_amt"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["sr_no"]).as_("sr_no")).
+where(col("file_id").is_(input["fileid"])).
+and_(jcol("company").contains("BMO")).
+grouped_by("funding_adj","report_date")
+
+MATCH-SUM-AMOUNT-INPUT-LBX-VALUE
+FromInputStatement().find(
+col("id").as_("lbxinputid"),
+const(input["bmofundid"]).as_("bmofundid"),
+const(input["bmoinputid"]).as_("bmoinputid"),
+const(input["funding_adj"]).as_("funding_adj"),
+const(input["report_date"]).as_("report_date"),
+const(input["sr_no"]).as_("sr_no")).
+where(jcol("description").contains("%LBX%")).
+and_(jnum("net").rounded_abs_eq(input["sum_amt"],2))
+
+
+LOCKBOX-INPUT-Report
+with_aliases(
+    UploadRawData, "lbxinputdata", "lockboxdata",
+    lambda lbxinputdata, lockboxdata:
+        Q(lbxinputdata)
+        .join(lockboxdata, on=lockboxdata.json_data["report_date"].astext == literal(input["report_date"]))
+        .find(lbxinputdata.json_data["description"].astext.label("DESCRIPTION"),
+              literal("LBX").label("CATEGORY"),
+              lockboxdata.json_data["ein"].astext.label("EIN"),
+              func.round(pg_safe_numeric(lockboxdata.json_data, "cheque_amount"), 2).label("AMOUNT"),
+              lbxinputdata.json_data["value_date"].astext.label("Value_Date"))
+        .where(lbxinputdata.id == input["lbxinputid"])
+        .and_(lockboxdata.json_data["funding_adj"].astext == literal(input["funding_adj"]))
+)
+
+LOCKBOX-PREMIERFUND-Report
+with_aliases(
+    UploadRawData, "bmoinputdata", "lockboxdata", "bmofundingdata",
+    lambda bmoinputdata, lockboxdata, bmofundingdata:
+        Q(bmoinputdata)
+        .join(lockboxdata, on=lockboxdata.json_data["report_date"].astext == literal(input["report_date"]))
+        .join(bmofundingdata, on=bmofundingdata.id == input["bmofundid"])
+        .find(func.replace(func.concat(bmoinputdata.json_data["description"].astext, bmoinputdata.json_data["net"].astext), " ", "").label("DESCRIPTION"),
+              literal("Funding").label("CATEGORY"),
+              lockboxdata.json_data["ein"].astext.label("EIN"),
+              bmofundingdata.json_data["details"].astext.label("TYPE"),
+              literal(input["sr_no"]).label("RUNID"),
+              func.round(pg_safe_numeric(lockboxdata.json_data, "cheque_amount"), 2).label("AMOUNT"),
+              bmoinputdata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmoinputdata.id == input["bmoinputid"])
+        .and_(lockboxdata.json_data["funding_adj"].astext == literal(input["funding_adj"]))
+)

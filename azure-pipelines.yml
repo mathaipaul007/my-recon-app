@@ -1,0 +1,140 @@
+# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/python
+
+trigger:
+- main
+
+variables:
+  pythonVersion : "3.14"
+  packageName : "drop.zip"
+
+stages:
+- stage: Build
+  displayName: Build
+  jobs:
+  - job: BuildJob
+    displayName: Build Python package
+    pool:
+      vmImage: "ubuntu-latest"
+    steps:
+    - checkout: self
+    - task: UsePythonVersion@0
+      displayName: "Use Python $(pythonVersion)"
+      inputs:
+        versionSpec: "$(pythonVersion)"
+        addToPath: true
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: "Install dependencies"
+    - script: |
+        pip install bandit
+        bandit -r . -ll
+        if [ $? -ne 0 ]; then
+          echo "Bandit found security issues. Failing build."
+          exit 1
+        fi
+      displayName: "Static Code Scan (Bandit)"
+    - script: |
+        pip install pip-audit
+        pip-audit -r requirements.txt
+        if [ $? -ne 0 ]; then
+          echo "Vulnerabilities found by pip-audit. Failing build."
+          exit 1
+        fi
+      displayName: "Check dependencies for vulnerabilities"
+
+    - script: |
+        set -euxo pipefail
+        mkdir -p "$(Build.ArtifactStagingDirectory)/app"
+      displayName: "Create Staging folder"
+    - task: CopyFiles@2
+      displayName: "Stage app files"
+      inputs:
+        SourceFolder: "$(Build.SourcesDirectory)"
+        Contents: |
+          **/*
+          !.git/**/*
+        TargetFolder: "$(Build.ArtifactStagingDirectory)/app"
+    - script: |
+        set -euxo pipefail
+        echo "Sources:"
+        ls -la "$(Build.SourcesDirectory)" | head -n 50
+        echo "Staged app folder:"
+        ls -la "$(Build.ArtifactStagingDirectory)/app" | head -n 50
+      displayName: "Debug Stages"
+    - task: ArchiveFiles@2
+      displayName: "Create deployment zip"
+      inputs:
+        rootFolderOrFile: "$(Build.ArtifactStagingDirectory)/app"
+        includeRootFolder: false
+        archiveType: "zip"
+        archiveFile: "$(Build.ArtifactStagingDirectory)/$(packageName)"
+        replaceExistingArchive: true
+    - publish: "$(Build.ArtifactStagingDirectory)/$(packageName)"
+      displayName: "Publish artifact"
+      artifact: "drop"
+
+- stage: Deploy
+  displayName: Deploy
+  dependsOn: Build
+  jobs:
+  - deployment: DeployJob
+    displayName: Deploy to Azure App Service
+    environment: "QA"
+    pool:
+      vmImage: "ubuntu-latest"
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+          - task: AzureAppServiceSettings@1
+            displayName: "Configure App Service settings"
+            inputs:
+              azureSubscription: "wirecon-new-connection"
+              appName: "reconn"
+              appSettings: |
+                [
+                  {"name": "SCM_DO_BUILD_DRURING_DEPLOYMENT", "value": "1", "slotSetting": false},
+                  {"name": "WEBSITE_RUN_FROM_PACKAGE", "value": "1", "slotSetting": false}
+                ]
+          - task: AzureCLI@2
+            displayName: "Stop App Service"
+            inputs:
+              azureSubscription: "wirecon-new-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                az webapp stop --resource-group "reconn1-rg" --name "reconn"
+
+          - task: AzureWebApp@1
+            displayName: "Deploy zip to app service"
+            inputs:
+              azureSubscription: "wirecon-new-connection"
+              appType: "webApp"
+              appName: "reconn"
+              package: "$(Pipeline.Workspace)/drop/$(packageName)"
+              deploymentMethod: "zipDeploy"
+
+          - task: AzureCLI@2
+            displayName: "Set App Service config"
+            inputs:
+              azureSubscription: "wirecon-new-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                az webapp config set --resource-group "reconn1-rg" --name "reconn" --startup-file "bash startup.sh" --always-on true
+
+          - task: AzureCLI@2
+            displayName: "Start App Service"
+            inputs:
+              azureSubscription: "wirecon-new-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                az webapp start --resource-group "reconn1-rg" --name "reconn"
