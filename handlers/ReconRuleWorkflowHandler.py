@@ -37,3 +37,25 @@ def create_new(body):
     new_recon_wrkflw(wrkflw)
 
     return "success"
+
+def save_rules(body):
+    #ruleList : List[ReconWorkflowRuleDTO]
+    #ruleList = [ReconWorkflowRuleDTO.model_validate(x) for x in body]
+    ruleList : ReconRuleWorkflow = []
+
+    workflowId = body["workflowId"]
+    ruleData = body["ruleData"]
+    print(workflowId)
+    print(ruleData)
+
+    for x in ruleData:
+        rrw = ReconRuleWorkflow()
+        for k,v in x.items():
+            setattr(rrw, k, v)
+
+        workflowId=rrw.workflowid
+        ruleList.append(rrw)
+    print("Removing the rules for workflow ",workflowId)
+    remove_rules(workflowId)
+    save_raw_data(ruleList)
+    return "success"
