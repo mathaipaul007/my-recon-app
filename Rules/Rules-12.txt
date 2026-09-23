@@ -1,0 +1,90 @@
+FromBMOFundingFile():
+    find("settlement_no", sum_("amounts").as_("sum_amt")).
+    grouped_by("settlement_no")
+
+FromInputStatement().
+    find(col("id").as_("bmoinputid"),
+    const(item["settlement_no"]).as_("sr_no")).
+    where(jcol("description").contains("%0055%")).
+    and_(jnum("net").rounded_abs_eq(item["sum_amt"],2))
+
+ FromBMOFundingFile()
+    .find(col("id").as_("bmofundid"),
+    pg_safe_numeric(UploadRawData.json_data,"amounts").label("bmoamount") ,
+    const(item["bmoinputid"]).as_("bmoinputid") ,
+    const(item["sr_no"]).as_("sr_no"),
+    jcol("pay_date").as_("pay_date"),
+    const(item["bmoinputid"]).as_("bmoinputid"))
+    .where(jcol("settlement_no").is_(item["sr_no"]))
+    .and_(jcol("details").is_("BMRRSP"))
+    .and_(col("cleared_status").is_("U")) 
+
+FromDeductionGL()
+.find(sum_("sum_amount").as_("ded_sum_amt"),
+const(item["sr_no"]).as_("sr_no"),
+const(item["bmoamount"]).as_("bmoamount"),
+const(item["bmofundid"]).as_("bmofundid"),
+const(item["bmoinputid"]).as_("bmoinputid"))
+.where(jcol("settlement_no").is_(item["sr_no"]))
+.and_(jcol("company").is_("Bank of Montreal"))
+.and_(jcol("deduction").contains("BMRRSP"))
+.and_(col("cleared_status").is_("U"))
+
+
+FromDeductionGL()
+.find(const(item["sr_no"]).as_("sr_no"),
+col("id").as_("dgl_id"),
+jcol("sum_amount").as_("ded_amt"),
+jcol("employee_id").as_("ded_ein"),
+const(item["bmofundid"]).as_("bmofundid"),
+const(item["bmoinputid"]).as_("bmoinputid"))
+.where(jcol("settlement_no").is_(item["sr_no"]))
+.and_(jcol("company").is_("Bank of Montreal"))
+.and_(jcol("deduction").contains("BMRRSP"))
+.and_(col("cleared_status").is_("U"))
+
+FromBmoChequeLog()
+.find(col("id").as_("input_id"),
+jcol("ein").as_("ein"),
+jcol("amount").as_("amount"),
+const(item["bmofundid"]).as_("bmofundid"),
+const(item["bmoinputid"]).as_("bmoinputid"),
+jcol("cheque_serial_no").as_("chekNumber"))
+.where(jcol("ein").is_(item["ded_ein"]))
+.and_(jnum("amount").rounded_abs_eq(item["ded_amt"],2))
+
+
+FromInputStatement().
+find(col("id").as_("settlementid"),
+const(item["ein"]).as_("ein"),
+const(item["chekNumber"]).as_("chekNumber"),
+const(item["bmofundid"]).as_("bmofundid"),
+const(item["amount"]).as_("amount"),
+const(item["bmoinputid"]).as_("bmoinputid")).
+where(jcol("description").contains(item["chekNumber"])).
+and_(col("cleared_status").is_("U")).
+and_(jnum("net").rounded_abs_eq(item["amount"],2)) 
+
+with_aliases(
+    UploadRawData,"bmodata","bmofunding",
+    lambda bmodata, bmofunding:
+        Q(bmodata)
+        .join(bmofunding, on=bmofunding.id == item["bmofundid"])
+        .find(func.replace(func.concat(bmodata.json_data["description"].astext,
+        bmodata.json_data["net"].astext),',','').label("DESCRIPTION"),
+        const("Funding").label("CATEGORY"),
+        bmofunding.json_data["settlement_no"].astext.label("RUNID"),
+        const("BMRRSP").label("TYPE"),
+        const(item["ein"]).label("EIN"),
+        const(item["chekNumber"]).label("CHECK #"),
+        const(item["amount"]).label("AMOUNT"),
+        bmodata.json_data["value_date"].astext.label("Value_Date"))
+        .where(bmodata.id == item["bmoinputid"])) 
+        
+FromInputStatement()
+    .find(UploadRawData.json_data["description"].astext.label("DESCRIPTION"),
+    func.round(pg_safe_numeric(UploadRawData.json_data["net"]),2).label("AMOUNT"),
+    UploadRawData.json_data["value_date"].astext.label("Value_Date"),
+    const(item["chekNumber"]).label("CHECK #"))
+    .where(UploadRawData.id == item["settlementid"])
+
